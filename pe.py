@@ -1,3 +1,4 @@
+#-*- coding:utf-8 -*-
 from ctypes import *
 from io import BytesIO
 from struct import pack, unpack
@@ -8,6 +9,10 @@ from defines import *
 MAX_DLL_NAME_LENGTH = 0x200
 MAX_IMPORT_NAME_LENGTH = 0x200
 
+import sys
+PYTHON_VERSION2 = 2
+PYTHON_VERSION3 = 3
+python_ver = float(sys.version[:3]) >= 3.0 and PYTHON_VERSION3 or PYTHON_VERSION2
 
 class PE(object):
     def __init__(self, fname):
@@ -29,13 +34,19 @@ class PE(object):
         # parse dos header
         dos_header = IMAGE_DOS_HEADER()
         assert sizeof(dos_header) == fp.readinto(dos_header), "Invalid DOS header length"
-        assert pack("H", dos_header.e_magic) == 'MZ', "Invalid DOS magic"
+        if python_ver == PYTHON_VERSION2:
+            assert pack("H", dos_header.e_magic) == 'MZ', "Invalid DOS magic"
+        elif python_ver == PYTHON_VERSION3:
+            assert pack("H", dos_header.e_magic) == b'MZ', "Invalid DOS magic"
 
         # parse nt header
         nt_header = IMAGE_NT_HEADERS32()
         fp.seek(dos_header.e_lfanew)
         assert sizeof(nt_header) == fp.readinto(nt_header), "Invalid PE header length"
-        assert pack("I", nt_header.Signature) == 'PE\x00\x00', "Invalid PE magic"
+        if python_ver == PYTHON_VERSION2:
+            assert pack("I", nt_header.Signature) == 'PE\x00\x00', "Invalid PE magic"
+        elif python_ver == PYTHON_VERSION3:
+            assert pack("I", nt_header.Signature) == b'PE\x00\x00', "Invalid PE magic"
 
         # check characteristics
         assert nt_header.FileHeader.Characteristics & IMAGE_FILE_EXECUTABLE_IMAGE, "Only exe and dll are supported"
@@ -62,18 +73,22 @@ class PE(object):
             64: IMAGE_NT_HEADERS64,
         }[bits]()
 
+        # seek "NT header"
         fp.seek(dos_header.e_lfanew)
+
+        # parse "NT header"
         assert sizeof(nt_header) == fp.readinto(nt_header), "Invalid PE header length"
 
         file_header = nt_header.FileHeader
 
-        # parse sections
+        # parse "section headers"
         section_headers = list()
         for _ in range(file_header.NumberOfSections):
             section_header = IMAGE_SECTION_HEADER()
             fp.readinto(section_header)
             section_headers.append(section_header)
 
+        # read "sections"
         for section_header in section_headers:
             fp.seek(section_header.PointerToRawData)
             data = fp.read(section_header.Misc.VirtualSize)
@@ -111,6 +126,8 @@ class PE(object):
         section_headers = self.section_headers
         assert section_headers is not None, "No sections found"
 
+        #print("1==", map(lambda x:x.VirtualAddress+x.SizeOfRawData, section_headers))
+        #print("2==", map(lambda x:x.VirtualAddress+x.Misc.VirtualSize, section_headers))
         size = max(map(lambda x:x.VirtualAddress+x.SizeOfRawData, section_headers))
         mapped = BytesIO("\x00"*size)
 
@@ -119,16 +136,19 @@ class PE(object):
         dos_header = self.dos_header
         nt_header = self.nt_header
 
-        # write dos Real-Mode Stub Program
+        # map dos Real-Mode Stub Program
         mapped.seek(sizeof(dos_header))
         fp.seek(sizeof(dos_header))
         mapped.write(fp.read(dos_header.e_lfanew-sizeof(dos_header)))
 
-        # write dos header and nt header
+        # map dos header and nt header
         mapped.seek(0)
         mapped.write(struct2str(dos_header))
+
         mapped.seek(dos_header.e_lfanew)
         mapped.write(struct2str(nt_header))
+
+        # map section headers
         for sh in section_headers:
             mapped.write(struct2str(sh))
 
@@ -207,7 +227,7 @@ class PE(object):
         fp.seek(data_directory.VirtualAddress)
         import_dirs = list()
         while True:
-            import_dir = IMAGE_IMPORT_DESCRIPTOR()
+            import_dir = IMAGE_IMPORT_DESCRIPTOR()  #执行一个普通程序时往往需要导入多个库，导入多少库就存在多少IMAGE_IMPORT_DESCRIPTOR结构体
             assert sizeof(import_dir) == fp.readinto(import_dir), "Invalid IMAGE_IMPORT_DIRECTORY length"
             if import_dir.Characteristics == 0:
                 break
@@ -298,7 +318,7 @@ class PE(object):
             if 0 <= offset < sh.SizeOfRawData: # aligned address (Virtual)
                 return sh.PointerToRawData + offset
 
-        raise Exception, "No suitable section found"
+        raise Exception("No suitable section found")
 
 
     def p2v(self, addr):
@@ -310,7 +330,7 @@ class PE(object):
             if 0 <= offset < sh.SizeOfRawData:
                 return sh.VirtualAddress + offset
 
-        raise Exception, "No suitable section found"
+        raise Exception("No suitable section found")
 
 
     def getstr(self, offset, size=0, isrva=False):
